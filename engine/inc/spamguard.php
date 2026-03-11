@@ -44,7 +44,7 @@ function sg_check_hash() {
 // Helper: Avatar
 function sg_get_avatar($foto) {
     global $config;
-    if(empty($foto)) return "engine/skins/images/noavatar.png";
+    if(empty($foto)) return $config['http_home_url'] . "templates/" . $config['skin'] . "/dleimages/noavatar.png";
     if ( count(explode("@", $foto)) == 2 ) return 'https://www.gravatar.com/avatar/' . md5(trim($foto)) . '?s=50';
     if ( strpos($foto, "http") === 0 || strpos($foto, "//") === 0 ) return $foto;
     return $config['http_home_url'] . "uploads/fotos/" . $foto;
@@ -53,6 +53,13 @@ function sg_get_avatar($foto) {
 // Main Logic
 $active_tab = "dashboard_tab";
 if(isset($_REQUEST['tab']) && $_REQUEST['tab']) $active_tab = $_REQUEST['tab'];
+
+// Otomatik Log Temizliği (Ayarlardaki gün sayısına göre siler)
+$log_days_limit = intval($sg_config['log_days']);
+if($log_days_limit > 0) {
+    $delete_time = $_TIME - ($log_days_limit * 86400);
+    $db->query("DELETE FROM " . PREFIX . "_spam_logs WHERE date < '{$delete_time}'");
+}
 
 // --- ACTIONS ---
 
@@ -68,17 +75,10 @@ if( isset($_POST['action']) && $_POST['action'] == "save" ) {
     $save_con['sfs_api'] = trim(strip_tags(stripslashes($save_con['sfs_api'])));
     $save_con['banned_domains'] = $sg_config['banned_domains'];
 	
-    $handler = fopen( ENGINE_DIR . '/data/spamguard_config.php', "w" );
-    fwrite( $handler, "<?php 
-
-//SpamGuard Configurations
-
-$sg_config = array (
-" );
-	foreach ( $save_con as $name => $value ) fwrite( $handler, "'{$name}' => \"{$value}\",\n" );
-	fwrite( $handler, ");\n\n?>" );
-	fclose( $handler );
-	clear_cache();
+    $export_data = var_export($save_con, true);
+    $file_content = "<?php\n\n//SpamGuard Configurations\n\n\$sg_config = {$export_data};\n\n?>";
+    file_put_contents(ENGINE_DIR . '/data/spamguard_config.php', $file_content);
+    clear_cache();
     header("Location: ?mod=spamguard&tab=general_tab&msg=saved"); die();
 }
 
@@ -96,17 +96,10 @@ if( isset($_POST['save_emails']) ) {
     $final_domain_string = implode(",", array_unique($clean_domains));
     $sg_config['banned_domains'] = $final_domain_string;
 	
-    $handler = fopen( ENGINE_DIR . '/data/spamguard_config.php', "w" );
-    fwrite( $handler, "<?php 
-
-//SpamGuard Configurations
-
-$sg_config = array (
-" );
-	foreach ( $sg_config as $name => $value ) fwrite( $handler, "'{$name}' => \"{$value}\",\n" );
-	fwrite( $handler, ");\n\n?>" );
-	fclose( $handler );
-	clear_cache();
+    $export_data = var_export($sg_config, true);
+    $file_content = "<?php\n\n//SpamGuard Configurations\n\n\$sg_config = {$export_data};\n\n?>";
+    file_put_contents(ENGINE_DIR . '/data/spamguard_config.php', $file_content);
+    clear_cache();
     header("Location: ?mod=spamguard&tab=email_tab&msg=saved"); die();
 }
 
@@ -134,6 +127,29 @@ if(isset($_POST['do_block_ip'])) {
         }
     }
 }
+// Whitelist: Ekle
+if(isset($_POST['add_whitelist'])) {
+    sg_check_hash();
+    $wl_data = $db->safesql(strtolower(trim($_POST['wl_data'])));
+    $wl_type = in_array($_POST['wl_type'], ['ip','email','domain']) ? $_POST['wl_type'] : 'ip';
+    $wl_note = $db->safesql(trim($_POST['wl_note']));
+    if($wl_data) {
+        $check = $db->super_query("SELECT id FROM " . PREFIX . "_spam_whitelist WHERE data='$wl_data'");
+        if(!$check['id']) {
+            $db->query("INSERT INTO " . PREFIX . "_spam_whitelist (data, type, note) VALUES ('$wl_data', '$wl_type', '$wl_note')");
+        }
+    }
+    header("Location: ?mod=spamguard&tab=whitelist_tab&msg=saved"); die();
+}
+
+// Whitelist: Sil
+if(isset($_GET['action']) && $_GET['action'] == 'delete_whitelist') {
+    sg_check_hash();
+    $id = intval($_GET['id']);
+    $db->query("DELETE FROM " . PREFIX . "_spam_whitelist WHERE id='$id'");
+    header("Location: ?mod=spamguard&tab=whitelist_tab&msg=deleted"); die();
+}
+
 if(isset($_REQUEST['action']) && $_REQUEST['action'] == 'delete_block') {
     if(isset($_REQUEST['user_hash'])) sg_check_hash(); 
     $id = intval($_REQUEST['id']);
@@ -197,7 +213,10 @@ if(isset($_POST['mass_action']) && isset($_POST['selected_users'])) {
             elseif($action_type == 'block_ip_user') {
                  $u = $db->super_query("SELECT logged_ip, name FROM " . USERPREFIX . "_users WHERE user_id='$uid'");
                  if($u['logged_ip']) {
-                     $db->query("INSERT INTO " . USERPREFIX . "_banned (descr, date, days, ip) VALUES ('Yasaklı Üye IP: {$u['name']}', '$_TIME', '0', '{$u['logged_ip']}')");
+                     $check_ip = $db->super_query("SELECT id FROM " . USERPREFIX . "_banned WHERE ip='{$u['logged_ip']}'");
+                     if(!$check_ip['id']) {
+                         $db->query("INSERT INTO " . USERPREFIX . "_banned (descr, date, days, ip) VALUES ('Yasaklı Üye IP: {$u['name']}', '$_TIME', '0', '{$u['logged_ip']}')");
+                     }
                  }
             }
             elseif($action_type == 'delete_user') {
@@ -266,7 +285,7 @@ echo <<<HTML
 HTML;
 
 // Navbar
-$nav = ['dashboard_tab'=>'','general_tab'=>'','email_tab'=>'','banned_tab'=>'','users_tab'=>'','logs_tab'=>''];
+$nav = ['dashboard_tab'=>'','general_tab'=>'','email_tab'=>'','banned_tab'=>'','users_tab'=>'','whitelist_tab'=>'','logs_tab'=>''];
 $nav[$active_tab] = 'active';
 
 echo <<<HTML
@@ -282,6 +301,7 @@ echo <<<HTML
 			<li class="{$nav['email_tab']}"><a onclick="ChangeOption(this, 'email_tab');"><i class="fa fa-envelope"></i> Mail Servisleri</a></li>
             <li class="{$nav['banned_tab']}"><a onclick="ChangeOption(this,'banned_tab');"><i class="fa fa-ban"></i> Yasaklı Liste</a></li>
             <li class="{$nav['users_tab']}"><a onclick="ChangeOption(this,'users_tab');"><i class="fa fa-users"></i> Kullanıcı Analizi</a></li>
+            <li class="{$nav['whitelist_tab']}"><a onclick="ChangeOption(this,'whitelist_tab');"><i class="fa fa-check-circle"></i> Whitelist</a></li>
 			<li class="{$nav['logs_tab']}"><a onclick="ChangeOption(this, 'logs_tab');"><i class="fa fa-list-alt"></i> Loglar</a></li>
 		</ul>
 	</div>
@@ -312,7 +332,7 @@ echo <<<HTML
                         <li><span class="label label-danger">+50 Puan</span> <strong>Hemen Çıkma:</strong> Kayıt tarihi ile son giriş tarihi aynı (Hiç giriş yapmamış gibi).</li>
                         <li><span class="label label-warning">+30 Puan</span> <strong>Hayalet:</strong> Kayıt olduktan sonra 15 dakika içinde çıkmış.</li>
                         <li><span class="label label-default">+20 Puan</span> <strong>Pasif:</strong> Hiçbir haber veya yorum eklememiş.</li>
-                        <li><hr style="margin: 10px 0;">
+                        <li><hr style="margin: 10px 0;"></li>
                         <li><span class="label label-danger">Kritik</span> <strong>80+ Puan:</strong> Potansiyel Spam Bot</li>
                         <li><span class="label label-warning">Yüksek</span> <strong>50+ Puan:</strong> Şüpheli Hesap</li>
                     </ul>
@@ -356,18 +376,18 @@ HTML;
 // 2. SETTINGS
 $style_general = ($active_tab == 'general_tab') ? '' : 'display:none;';
 echo "<form action='' method='post'><input type='hidden' name='action' value='save'><input type='hidden' name='user_hash' value='{$dle_login_hash}'><div id='general_tab' class='panel panel-flat tab-content-panel' style='{$style_general}'><div class='panel-body border-bottom'><h6 class='text-semibold no-margin'>Genel Ayarlar</h6></div><table class='table table-striped'>";
-echo '<tr><td class="col-xs-6 col-sm-6 col-md-7"><h6 class="media-heading text-semibold">Modül Durumu</h6><div class="text-muted text-size-small hidden-xs">SpamGuard aktif/pasif</div></td><td class="col-xs-6 col-sm-6 col-md-5"><input class="switch" type="checkbox" name="save_con[status]" value="1" '.("$sg_config[status]"?"checked":"").'></td></tr>';
+echo '<tr><td class="col-xs-6 col-sm-6 col-md-7"><h6 class="media-heading text-semibold">Modül Durumu</h6><div class="text-muted text-size-small hidden-xs">SpamGuard aktif/pasif</div></td><td class="col-xs-6 col-sm-6 col-md-5"><input class="switch" type="checkbox" name="save_con[status]" value="1" '.($sg_config['status']?"checked":"").'></td></tr>';
 echo '<tr><td class="col-xs-6 col-sm-6 col-md-7"><h6 class="media-heading text-semibold">SFS API Key</h6><div class="text-muted text-size-small hidden-xs">StopForumSpam API anahtarınız</div></td><td class="col-xs-6 col-sm-6 col-md-5"><input type="text" class="form-control" name="save_con[sfs_api]" value="'.$sg_config['sfs_api'].'"></td></tr>';
-echo '<tr><td class="col-xs-6 col-sm-6 col-md-7"><h6 class="media-heading text-semibold">Proxy/VPN Engelle</h6><div class="text-muted text-size-small hidden-xs">Bilinen proxy IPlerini durdur</div></td><td class="col-xs-6 col-sm-6 col-md-5"><input class="switch" type="checkbox" name="save_con[block_proxy]" value="1" '.("$sg_config[block_proxy]"?"checked":"").'></td></tr>';
+echo '<tr><td class="col-xs-6 col-sm-6 col-md-7"><h6 class="media-heading text-semibold">Proxy/VPN Engelle</h6><div class="text-muted text-size-small hidden-xs">Bilinen proxy IPlerini durdur</div></td><td class="col-xs-6 col-sm-6 col-md-5"><input class="switch" type="checkbox" name="save_con[block_proxy]" value="1" '.($sg_config['block_proxy']?"checked":"").'></td></tr>';
 echo '<tr><td class="col-xs-6 col-sm-6 col-md-7"><h6 class="media-heading text-semibold">Min. Kayıt Süresi</h6><div class="text-muted text-size-small hidden-xs">Form doldurma süresi (sn)</div></td><td class="col-xs-6 col-sm-6 col-md-5"><input type="number" class="form-control" style="width:100px" name="save_con[min_reg_time]" value="'.$sg_config['min_reg_time'].'"></td></tr>';
 echo '<tr><td class="col-xs-6 col-sm-6 col-md-7"><h6 class="media-heading text-semibold">Log Saklama (Gün)</h6><div class="text-muted text-size-small hidden-xs">Otomatik log temizleme</div></td><td class="col-xs-6 col-sm-6 col-md-5"><input type="number" class="form-control" style="width:100px" name="save_con[log_days]" value="'.$sg_config['log_days'].'"></td></tr>';
-echo '<tr><td class="col-xs-6 col-sm-6 col-md-7"><h6 class="media-heading text-semibold">Geçici E-Posta Engeli</h6><div class="text-muted text-size-small hidden-xs">Disposable mailleri engelle</div></td><td class="col-xs-6 col-sm-6 col-md-5"><input class="switch" type="checkbox" name="save_con[ban_disposable]" value="1" '.("$sg_config[ban_disposable]"?"checked":"").'></td></tr>';
+echo '<tr><td class="col-xs-6 col-sm-6 col-md-7"><h6 class="media-heading text-semibold">Geçici E-Posta Engeli</h6><div class="text-muted text-size-small hidden-xs">Disposable mailleri engelle</div></td><td class="col-xs-6 col-sm-6 col-md-5"><input class="switch" type="checkbox" name="save_con[ban_disposable]" value="1" '.($sg_config['ban_disposable']?"checked":"").'></td></tr>';
 echo "</table><div class='panel-footer'><button type='submit' class='btn bg-teal btn-sm btn-raised'><i class='fa fa-floppy-o position-left'></i> Ayarları Kaydet</button></div></div></form>";
 
 $style_email = ($active_tab == 'email_tab') ? '' : 'display:none;';
-echo "<form action='' method='post'><input type='hidden' name='save_emails' value='1'><input type='hidden' name='user_hash' value='{$dle_login_hash}'><div id='email_tab' class='panel panel-flat tab-content-panel' style='{$style_email}'><div class='panel-body border-bottom'><h6 class='text-semibold no-margin'>Yasaklı Mail Servisleri</h6></div><div class='panel-body'><textarea name='banned_domains_list' class='form-control' rows='15' style='font-family:monospace;'>".str_replace(",", "\n", $sg_config['banned_domains'] )."</textarea></div><div class='panel-footer'><button type='submit' class='btn bg-primary btn-sm btn-raised'><i class='fa fa-floppy-o position-left'></i> Listeyi Güncelle</button></div></div></form>";
+echo "<form action='' method='post'><input type='hidden' name='save_emails' value='1'><input type='hidden' name='user_hash' value='{$dle_login_hash}'><div id='email_tab' class='panel panel-flat tab-content-panel' style='{$style_email}'><div class='panel-body border-bottom'><h6 class='text-semibold no-margin'>Yasaklı Mail Servisleri</h6></div><div class='panel-body'><textarea name='banned_domains_list' class='form-control' rows='15' style='font-family:monospace;'>".str_replace(",", "\n", $sg_config['banned_domains'])."</textarea></div><div class='panel-footer'><button type='submit' class='btn bg-primary btn-sm btn-raised'><i class='fa fa-floppy-o position-left'></i> Listeyi Güncelle</button></div></div></form>";
 
-// 3. BANNEDTAB
+// 3. BANNED TAB
 $style_banned = ($active_tab == 'banned_tab') ? '' : 'display:none;';
 $start_from_ban = isset($_REQUEST['start_from']) && $active_tab == 'banned_tab' ? intval($_REQUEST['start_from']) : 0;
 $news_per_page = 50; 
@@ -380,15 +400,17 @@ if ($start_from_ban > 0) { $pre = $start_from_ban - $news_per_page; $npp_nav_ban
 if ($count_all_ban > $i) { $npp_nav_ban .= "<li><a href=\"?mod=spamguard&tab=banned_tab&start_from={$i}\">>></a></li>"; }
 
 echo "<div id='banned_tab' class='panel panel-flat tab-content-panel' style='{$style_banned}'>";
-echo "<div class='panel-heading'><h5 class='panel-title'>Yasaklı IP Listesi</h5><div class='heading-elements'><ul class='icons-list'><li><a href='#' onclick="$('#newblock').modal(); return false;"><i class='fa fa-plus-circle'></i> Ekle</a></li></ul></div></div>";
+echo "<div class='panel-heading'><h5 class='panel-title'>Yasaklı IP Listesi</h5><div class='heading-elements'><ul class='icons-list'><li><a href='#' onclick=\"$('#newblock').modal(); return false;\"><i class='fa fa-plus-circle'></i> Ekle</a></li></ul></div></div>";
 echo "<div class='table-responsive'><table class='table table-striped table-xs table-hover'><thead><tr><th style='width: 250px'>IP</th><th>Kullanıcı (Varsa)</th><th style='width: 200px'>Tarih</th><th>Sebep</th><th style='width: 70px'>&nbsp;</th></tr></thead><tbody>";
 
 $db->query( "SELECT b.*, u.name as username FROM " . USERPREFIX . "_banned b LEFT JOIN " . USERPREFIX . "_users u ON b.users_id = u.user_id ORDER BY b.id DESC LIMIT {$start_from_ban},{$news_per_page}" );
 while($row = $db->get_row()) {
      $date_str = ($row['date']) ? date("d.m.Y H:i", $row['date']) : "Süresiz";
      $show_name = "-";
-     if($row['username']) $show_name = "<span class='text-semibold text-primary'>{$row['username']}</span>";
+     if($row['username']) $show_name = "<span class='text-semibold text-primary'>".htmlspecialchars($row['username'], ENT_QUOTES, 'UTF-8')."</span>";
      elseif($row['users_id']) $show_name = "<span class='text-muted'>Silinmiş Üye (ID: {$row['users_id']})</span>";
+     $safe_ip    = htmlspecialchars($row['ip'],    ENT_QUOTES, 'UTF-8');
+     $safe_descr = htmlspecialchars($row['descr'], ENT_QUOTES, 'UTF-8');
      
      $menu_link = <<<HTML
 <div class="btn-group">
@@ -398,7 +420,7 @@ while($row = $db->get_row()) {
   </ul>
 </div>
 HTML;
-     echo "<tr><td>{$row['ip']}</td><td>{$show_name}</td><td>{$date_str}</td><td>{$row['descr']}</td><td>{$menu_link}</td></tr>";
+     echo "<tr><td>{$safe_ip}</td><td>{$show_name}</td><td>{$date_str}</td><td>{$safe_descr}</td><td>{$menu_link}</td></tr>";
 }
 echo "</tbody></table></div>";
 echo "</div>";
@@ -412,7 +434,7 @@ $where_clause = "user_id > 0";
 
 if($filter_type == 'ghosts') $where_clause .= " AND (lastdate = reg_date OR lastdate = 0)";
 elseif($filter_type == '30days') $where_clause .= " AND lastdate < " . ($_TIME - (30 * 86400));
-elseif($filter_type == 'highrisk') { 
+elseif($filter_type == 'highrisk') {
      $ghost_t = $_TIME - (30 * 86400);
      $where_clause .= " AND ((lastdate=reg_date) OR (lastdate<{$ghost_t} AND news_num=0 AND comm_num=0))";
 }
@@ -422,8 +444,8 @@ $total_users = $count_q['count'];
 
 $style_users = ($active_tab == 'users_tab') ? '' : 'display:none;';
 echo "<div id='users_tab' class='panel panel-flat tab-content-panel' style='{$style_users}'><form action='' method='post' name='usersform' id='usersform'><input type='hidden' name='mod' value='spamguard'><input type='hidden' name='tab' value='users_tab'><input type='hidden' name='start_from' value='{$start_from}'><input type='hidden' name='user_hash' value='{$dle_login_hash}'>";
-echo "<div class='panel-body border-bottom'><div class='row'><div class='col-md-3'><select name='filter_user_time' onchange='document.usersform.start_from.value=0; document.usersform.submit();' class='form-control'><option value='all' ".("$filter_type"=='all'?'selected':'').">Tümü</option><option value='ghosts' ".("$filter_type"=='ghosts'?'selected':'').">Ghost Users</option><option value='30days' ".("$filter_type"=='30days'?'selected':'').">30 Gün Pasif</option><option value='highrisk' ".("$filter_type"=='highrisk'?'selected':'').">Yüksek Riskli</option></select></div><div class='col-md-9 text-right'><button type='submit' name='mass_action' value='1' onclick="$('#action_type_input').val('block_ip_user');" class='btn btn-warning btn-sm'>IP Engelle</button> <button type='submit' name='mass_action' value='1' onclick="$('#action_type_input').val('ban_user');" class='btn btn-danger btn-sm'>Banla</button> <button type='submit' name='mass_action' value='1' onclick="if(confirm('Sil?')) { $('#action_type_input').val('delete_user'); return true; } else return false;" class='btn btn-default btn-sm'>Sil</button><input type='hidden' name='action_type' id='action_type_input' value=''></div></div></div>";
-echo "<div class='table-responsive'><table class='table table-xs table-striped table-hover'><thead><tr><th style='width:1px;'><input type='checkbox' onclick="$('input[name*=\'selected_users\']').prop('checked', this.checked);"></th><th style='width: 40px'>&nbsp;</th><th>Kullanıcı Detayları</th><th>Aktivite</th><th>Risk Analizi</th><th style='width: 40px'>İşlem</th></tr></thead><tbody>";
+echo "<div class='panel-body border-bottom'><div class='row'><div class='col-md-3'><select name='filter_user_time' onchange='document.usersform.start_from.value=0; document.usersform.submit();' class='form-control'><option value='all' ".($filter_type=='all'?'selected':'').">Tümü</option><option value='ghosts' ".($filter_type=='ghosts'?'selected':'').">Ghost Users</option><option value='30days' ".($filter_type=='30days'?'selected':'').">30 Gün Pasif</option><option value='highrisk' ".($filter_type=='highrisk'?'selected':'').">Yüksek Riskli</option></select></div><div class='col-md-9 text-right'><button type='submit' name='mass_action' value='1' onclick=\"$('#action_type_input').val('block_ip_user');\" class='btn btn-warning btn-sm'>IP Engelle</button> <button type='submit' name='mass_action' value='1' onclick=\"$('#action_type_input').val('ban_user');\" class='btn btn-danger btn-sm'>Banla</button> <button type='submit' name='mass_action' value='1' onclick=\"if(confirm('Sil?')) { $('#action_type_input').val('delete_user'); return true; } else return false;\" class='btn btn-default btn-sm'>Sil</button><input type='hidden' name='action_type' id='action_type_input' value=''></div></div></div>";
+echo "<div class='table-responsive'><table class='table table-xs table-striped table-hover'><thead><tr><th style='width:1px;'><input type='checkbox' onclick=\"$('input[name*=\'selected_users\']').prop('checked', this.checked);\"></th><th style='width: 40px'>&nbsp;</th><th>Kullanıcı Detayları</th><th>Aktivite</th><th>Risk Analizi</th><th style='width: 40px'>İşlem</th></tr></thead><tbody>";
 
 $db->query("SELECT user_id, name, email, reg_date, lastdate, logged_ip, news_num, comm_num, banned, user_group, fullname, land, info, foto FROM " . USERPREFIX . "_users WHERE $where_clause ORDER BY reg_date DESC LIMIT {$start_from},{$limit}");
 while($user = $db->get_row()) {
@@ -471,10 +493,10 @@ $total_pages = ceil($total_users / $limit);
 $current_page = floor($start_from / $limit) + 1;
 if($total_pages > 1) {
     echo "<div class='panel-footer'><ul class='pagination pagination-sm'>";
-    if($current_page > 1) echo "<li><a href='#' onclick='document.usersform.start_from.value=".("$start_from" - $limit)."; document.usersform.submit(); return false;'>&laquo;</a></li>";
+    if($current_page > 1) echo "<li><a href='#' onclick='document.usersform.start_from.value=".($start_from - $limit)."; document.usersform.submit(); return false;'>&laquo;</a></li>";
     
     for($i=1; $i<=$total_pages; $i++) {
-        if($i==1 || $i==$total_pages || ($i >= $current_page-2 && $i <= $current_page+2)) { 
+        if($i==1 || $i==$total_pages || ($i >= $current_page-2 && $i <= $current_page+2)) {
              $st = ($i-1)*$limit;
              $cls = ($i==$current_page) ? 'active' : '';
              echo "<li class='$cls'><a href='#' onclick='document.usersform.start_from.value=$st; document.usersform.submit(); return false;'>$i</a></li>";
@@ -483,17 +505,74 @@ if($total_pages > 1) {
         }
     }
     
-    if($current_page < $total_pages) echo "<li><a href='#' onclick='document.usersform.start_from.value=".("$start_from" + $limit)."; document.usersform.submit(); return false;'>&raquo;</a></li>";
+    if($current_page < $total_pages) echo "<li><a href='#' onclick='document.usersform.start_from.value=".($start_from + $limit)."; document.usersform.submit(); return false;'>&raquo;</a></li>";
     echo "</ul></div>";
 }
 
 echo "</form></div>";
 
-// 5. LOGS TAB
+// 5. WHITELIST TAB
+$style_whitelist = ($active_tab == 'whitelist_tab') ? '' : 'display:none;';
+$whitelist_rows = '';
+$db->query("SELECT * FROM " . PREFIX . "_spam_whitelist ORDER BY id DESC");
+while($wl = $db->get_row()) {
+    $wl_data = htmlspecialchars($wl['data'], ENT_QUOTES, 'UTF-8');
+    $wl_note = htmlspecialchars($wl['note'], ENT_QUOTES, 'UTF-8');
+    $type_labels = ['ip' => 'label-primary', 'email' => 'label-info', 'domain' => 'label-success'];
+    $type_label  = isset($type_labels[$wl['type']]) ? $type_labels[$wl['type']] : 'label-default';
+    $whitelist_rows .= "<tr>
+        <td><span class='label {$type_label}'>".strtoupper($wl['type'])."</span></td>
+        <td><strong>{$wl_data}</strong></td>
+        <td><span class='text-muted'>{$wl_note}</span></td>
+        <td><a href='?mod=spamguard&tab=whitelist_tab&action=delete_whitelist&id={$wl['id']}&user_hash={$dle_login_hash}' onclick=\"return confirm('Listeden kaldır?');\" class='btn btn-xs btn-danger'><i class='fa fa-trash-o'></i></a></td>
+    </tr>";
+}
+if(!$whitelist_rows) $whitelist_rows = "<tr><td colspan='4' class='text-center text-muted'>Whitelist boş. Güvendiğiniz IP, email veya domainleri buradan ekleyin.</td></tr>";
+
+echo "<div id='whitelist_tab' class='panel panel-flat tab-content-panel' style='{$style_whitelist}'>
+<div class='panel-heading'><h5 class='panel-title'>Güvenli Liste (Whitelist)</h5><div class='heading-elements'><ul class='icons-list'><li><a href='#' onclick=\"$('#newwhitelist').modal(); return false;\"><i class='fa fa-plus-circle'></i> Ekle</a></li></ul></div></div>
+<div class='table-responsive'><table class='table table-striped table-xs table-hover'>
+<thead><tr><th style='width:80px'>Tür</th><th>Değer</th><th>Not</th><th style='width:50px'>&nbsp;</th></tr></thead>
+<tbody>{$whitelist_rows}</tbody>
+</table></div></div>";
+
+echo '<div class="modal fade" id="newwhitelist"><div class="modal-dialog"><div class="modal-content">
+<form method="post" action="">
+<input type="hidden" name="mod" value="spamguard">
+<input type="hidden" name="add_whitelist" value="1">
+<input type="hidden" name="user_hash" value="'.$dle_login_hash.'">
+<div class="modal-header bg-teal"><button type="button" class="close" data-dismiss="modal">&times;</button><h6 class="modal-title">Whitelist\'e Ekle</h6></div>
+<div class="modal-body">
+    <div class="form-group">
+        <label>Tür</label>
+        <select name="wl_type" class="form-control">
+            <option value="ip">IP Adresi</option>
+            <option value="email">E-Posta</option>
+            <option value="domain">Domain</option>
+        </select>
+    </div>
+    <div class="form-group">
+        <label>Değer</label>
+        <input type="text" name="wl_data" class="form-control" placeholder="örn: 192.168.1.1 veya user@domain.com" required>
+    </div>
+    <div class="form-group">
+        <label>Not (İsteğe Bağlı)</label>
+        <input type="text" name="wl_note" class="form-control" placeholder="Bu girişi neden eklediniz?">
+    </div>
+</div>
+<div class="modal-footer"><button type="submit" class="btn btn-sm bg-teal btn-raised">Ekle</button></div>
+</form></div></div></div>';
+
+// 6. LOGS TAB
 $style_logs = ($active_tab == 'logs_tab') ? '' : 'display:none;';
-echo "<div id='logs_tab' class='panel panel-flat tab-content-panel' style='{$style_logs}'><div class='panel-body'><h6 class='no-margin'>Loglar</h6></div><table class='table'><thead><tr><th>Tarih</th><th>IP</th><th>Sebep</th></tr></thead><tbody>";
+echo "<div id='logs_tab' class='panel panel-flat tab-content-panel' style='{$style_logs}'><div class='panel-body'><h6 class='no-margin'>Loglar</h6></div><table class='table table-striped table-xs'><thead><tr><th>Tarih</th><th>IP</th><th>Sebep</th><th>Detay (Data)</th></tr></thead><tbody>";
 $db->query("SELECT * FROM " . PREFIX . "_spam_logs ORDER BY id DESC LIMIT 50");
-while($log = $db->get_row()) { echo "<tr><td>".date("d.m.Y H:i",$log['date'])."</td><td>{$log['ip']}</td><td>{$log['reason']}</td></tr>"; }
+while($log = $db->get_row()) {
+    $safe_ip     = htmlspecialchars($log['ip'],     ENT_QUOTES, 'UTF-8');
+    $safe_reason = htmlspecialchars($log['reason'], ENT_QUOTES, 'UTF-8');
+    $safe_data   = htmlspecialchars($log['data'],   ENT_QUOTES, 'UTF-8');
+    echo "<tr><td>".date("d.m.Y H:i",$log['date'])."</td><td>{$safe_ip}</td><td><span class='label label-danger'>{$safe_reason}</span></td><td><span class='text-muted text-size-small'>{$safe_data}</span></td></tr>";
+}
 echo "</tbody></table></div>";
 
 echo "</div>"; // End sg_container
