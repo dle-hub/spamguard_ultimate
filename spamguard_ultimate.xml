@@ -2,10 +2,13 @@
 <dleplugin>
 	<name>DLE SpamGuard Ultimate</name>
 	<description>DataLife Engine için geliştirilmiş %100 Native Anti-Spam ve Güvenlik Eklentisi. Gelişmiş Filtreleme, Risk Analizi ve IP Yönetimi.</description>
-	<icon>engine/skins/images/shield.png</icon>
+	<icon>public/adminpanel/images/shield.png</icon>
 	<version>2.5.0</version>
 	<dleversion>13.0</dleversion>
-	<versiontag>2.5.0</versiontag>
+	<versioncompare>==</versioncompare>
+	<upgradeurl></upgradeurl>
+	<filedelete>0</filedelete>
+	<needplugin></needplugin>
 	<mnotice>1</mnotice>
 	<mysqlinstall><![CDATA[CREATE TABLE IF NOT EXISTS `{prefix}_spam_logs` (
   `id` int(11) NOT NULL AUTO_INCREMENT,
@@ -40,6 +43,7 @@ DELETE FROM `{prefix}_admin_sections` WHERE `name` = 'spamguard';]]></mysqldelet
 	<phpenable><![CDATA[]]></phpenable>
 	<phpdisable><![CDATA[]]></phpdisable>
 	<phpdelete><![CDATA[]]></phpdelete>
+	<notice><![CDATA[]]></notice>
 	<file name="engine/inc/spamguard.php">
 		<operation action="create">
 			<replacecode><![CDATA[<?php
@@ -88,7 +92,7 @@ function sg_check_hash() {
 // Helper: Avatar
 function sg_get_avatar($foto) {
     global $config;
-    if(empty($foto)) return "engine/skins/images/noavatar.png";
+    if(empty($foto)) return $config['http_home_url'] . "templates/" . $config['skin'] . "/dleimages/noavatar.png";
     if ( count(explode("@", $foto)) == 2 ) return 'https://www.gravatar.com/avatar/' . md5(trim($foto)) . '?s=50';
     if ( strpos($foto, "http") === 0 || strpos($foto, "//") === 0 ) return $foto;
     return $config['http_home_url'] . "uploads/fotos/" . $foto;
@@ -97,6 +101,13 @@ function sg_get_avatar($foto) {
 // Main Logic
 $active_tab = "dashboard_tab";
 if(isset($_REQUEST['tab']) && $_REQUEST['tab']) $active_tab = $_REQUEST['tab'];
+
+// Otomatik Log Temizliği (Ayarlardaki gün sayısına göre siler)
+$log_days_limit = intval($sg_config['log_days']);
+if($log_days_limit > 0) {
+    $delete_time = $_TIME - ($log_days_limit * 86400);
+    $db->query("DELETE FROM " . PREFIX . "_spam_logs WHERE date < '{$delete_time}'");
+}
 
 // --- ACTIONS ---
 
@@ -112,12 +123,10 @@ if( isset($_POST['action']) && $_POST['action'] == "save" ) {
     $save_con['sfs_api'] = trim(strip_tags(stripslashes($save_con['sfs_api'])));
     $save_con['banned_domains'] = $sg_config['banned_domains'];
 	
-    $handler = fopen( ENGINE_DIR . '/data/spamguard_config.php', "w" );
-    fwrite( $handler, "<?php \n\n//SpamGuard Configurations\n\n\$sg_config = array (\n" );
-	foreach ( $save_con as $name => $value ) fwrite( $handler, "'{$name}' => \"{$value}\",\n" );
-	fwrite( $handler, ");\n\n?>" );
-	fclose( $handler );
-	clear_cache();
+    $export_data = var_export($save_con, true);
+    $file_content = "<?php\n\n//SpamGuard Configurations\n\n\$sg_config = {$export_data};\n\n?>";
+    file_put_contents(ENGINE_DIR . '/data/spamguard_config.php', $file_content);
+    clear_cache();
     header("Location: ?mod=spamguard&tab=general_tab&msg=saved"); die();
 }
 
@@ -135,12 +144,10 @@ if( isset($_POST['save_emails']) ) {
     $final_domain_string = implode(",", array_unique($clean_domains));
     $sg_config['banned_domains'] = $final_domain_string;
 	
-    $handler = fopen( ENGINE_DIR . '/data/spamguard_config.php', "w" );
-    fwrite( $handler, "<?php \n\n//SpamGuard Configurations\n\n\$sg_config = array (\n" );
-	foreach ( $sg_config as $name => $value ) fwrite( $handler, "'{$name}' => \"{$value}\",\n" );
-	fwrite( $handler, ");\n\n?>" );
-	fclose( $handler );
-	clear_cache();
+    $export_data = var_export($sg_config, true);
+    $file_content = "<?php\n\n//SpamGuard Configurations\n\n\$sg_config = {$export_data};\n\n?>";
+    file_put_contents(ENGINE_DIR . '/data/spamguard_config.php', $file_content);
+    clear_cache();
     header("Location: ?mod=spamguard&tab=email_tab&msg=saved"); die();
 }
 
@@ -168,6 +175,29 @@ if(isset($_POST['do_block_ip'])) {
         }
     }
 }
+// Whitelist: Ekle
+if(isset($_POST['add_whitelist'])) {
+    sg_check_hash();
+    $wl_data = $db->safesql(strtolower(trim($_POST['wl_data'])));
+    $wl_type = in_array($_POST['wl_type'], ['ip','email','domain']) ? $_POST['wl_type'] : 'ip';
+    $wl_note = $db->safesql(trim($_POST['wl_note']));
+    if($wl_data) {
+        $check = $db->super_query("SELECT id FROM " . PREFIX . "_spam_whitelist WHERE data='$wl_data'");
+        if(!$check['id']) {
+            $db->query("INSERT INTO " . PREFIX . "_spam_whitelist (data, type, note) VALUES ('$wl_data', '$wl_type', '$wl_note')");
+        }
+    }
+    header("Location: ?mod=spamguard&tab=whitelist_tab&msg=saved"); die();
+}
+
+// Whitelist: Sil
+if(isset($_GET['action']) && $_GET['action'] == 'delete_whitelist') {
+    sg_check_hash();
+    $id = intval($_GET['id']);
+    $db->query("DELETE FROM " . PREFIX . "_spam_whitelist WHERE id='$id'");
+    header("Location: ?mod=spamguard&tab=whitelist_tab&msg=deleted"); die();
+}
+
 if(isset($_REQUEST['action']) && $_REQUEST['action'] == 'delete_block') {
     if(isset($_REQUEST['user_hash'])) sg_check_hash(); 
     $id = intval($_REQUEST['id']);
@@ -231,7 +261,10 @@ if(isset($_POST['mass_action']) && isset($_POST['selected_users'])) {
             elseif($action_type == 'block_ip_user') {
                  $u = $db->super_query("SELECT logged_ip, name FROM " . USERPREFIX . "_users WHERE user_id='$uid'");
                  if($u['logged_ip']) {
-                     $db->query("INSERT INTO " . USERPREFIX . "_banned (descr, date, days, ip) VALUES ('Yasaklı Üye IP: {$u['name']}', '$_TIME', '0', '{$u['logged_ip']}')");
+                     $check_ip = $db->super_query("SELECT id FROM " . USERPREFIX . "_banned WHERE ip='{$u['logged_ip']}'");
+                     if(!$check_ip['id']) {
+                         $db->query("INSERT INTO " . USERPREFIX . "_banned (descr, date, days, ip) VALUES ('Yasaklı Üye IP: {$u['name']}', '$_TIME', '0', '{$u['logged_ip']}')");
+                     }
                  }
             }
             elseif($action_type == 'delete_user') {
@@ -300,7 +333,7 @@ echo <<<HTML
 HTML;
 
 // Navbar
-$nav = ['dashboard_tab'=>'','general_tab'=>'','email_tab'=>'','banned_tab'=>'','users_tab'=>'','logs_tab'=>''];
+$nav = ['dashboard_tab'=>'','general_tab'=>'','email_tab'=>'','banned_tab'=>'','users_tab'=>'','whitelist_tab'=>'','logs_tab'=>''];
 $nav[$active_tab] = 'active';
 
 echo <<<HTML
@@ -316,6 +349,7 @@ echo <<<HTML
 			<li class="{$nav['email_tab']}"><a onclick="ChangeOption(this, 'email_tab');"><i class="fa fa-envelope"></i> Mail Servisleri</a></li>
             <li class="{$nav['banned_tab']}"><a onclick="ChangeOption(this,'banned_tab');"><i class="fa fa-ban"></i> Yasaklı Liste</a></li>
             <li class="{$nav['users_tab']}"><a onclick="ChangeOption(this,'users_tab');"><i class="fa fa-users"></i> Kullanıcı Analizi</a></li>
+            <li class="{$nav['whitelist_tab']}"><a onclick="ChangeOption(this,'whitelist_tab');"><i class="fa fa-check-circle"></i> Whitelist</a></li>
 			<li class="{$nav['logs_tab']}"><a onclick="ChangeOption(this, 'logs_tab');"><i class="fa fa-list-alt"></i> Loglar</a></li>
 		</ul>
 	</div>
@@ -421,8 +455,10 @@ $db->query( "SELECT b.*, u.name as username FROM " . USERPREFIX . "_banned b LEF
 while($row = $db->get_row()) {
      $date_str = ($row['date']) ? date("d.m.Y H:i", $row['date']) : "Süresiz";
      $show_name = "-";
-     if($row['username']) $show_name = "<span class='text-semibold text-primary'>{$row['username']}</span>";
+     if($row['username']) $show_name = "<span class='text-semibold text-primary'>".htmlspecialchars($row['username'], ENT_QUOTES, 'UTF-8')."</span>";
      elseif($row['users_id']) $show_name = "<span class='text-muted'>Silinmiş Üye (ID: {$row['users_id']})</span>";
+     $safe_ip    = htmlspecialchars($row['ip'],    ENT_QUOTES, 'UTF-8');
+     $safe_descr = htmlspecialchars($row['descr'], ENT_QUOTES, 'UTF-8');
      
      $menu_link = <<<HTML
 <div class="btn-group">
@@ -432,7 +468,7 @@ while($row = $db->get_row()) {
   </ul>
 </div>
 HTML;
-     echo "<tr><td>{$row['ip']}</td><td>{$show_name}</td><td>{$date_str}</td><td>{$row['descr']}</td><td>{$menu_link}</td></tr>";
+     echo "<tr><td>{$safe_ip}</td><td>{$show_name}</td><td>{$date_str}</td><td>{$safe_descr}</td><td>{$menu_link}</td></tr>";
 }
 echo "</tbody></table></div>";
 echo "</div>";
@@ -523,20 +559,77 @@ if($total_pages > 1) {
 
 echo "</form></div>";
 
-// 5. LOGS TAB
+// 5. WHITELIST TAB
+$style_whitelist = ($active_tab == 'whitelist_tab') ? '' : 'display:none;';
+$whitelist_rows = '';
+$db->query("SELECT * FROM " . PREFIX . "_spam_whitelist ORDER BY id DESC");
+while($wl = $db->get_row()) {
+    $wl_data = htmlspecialchars($wl['data'], ENT_QUOTES, 'UTF-8');
+    $wl_note = htmlspecialchars($wl['note'], ENT_QUOTES, 'UTF-8');
+    $type_labels = ['ip' => 'label-primary', 'email' => 'label-info', 'domain' => 'label-success'];
+    $type_label  = isset($type_labels[$wl['type']]) ? $type_labels[$wl['type']] : 'label-default';
+    $whitelist_rows .= "<tr>
+        <td><span class='label {$type_label}'>".strtoupper($wl['type'])."</span></td>
+        <td><strong>{$wl_data}</strong></td>
+        <td><span class='text-muted'>{$wl_note}</span></td>
+        <td><a href='?mod=spamguard&tab=whitelist_tab&action=delete_whitelist&id={$wl['id']}&user_hash={$dle_login_hash}' onclick=\"return confirm('Listeden kaldır?');\" class='btn btn-xs btn-danger'><i class='fa fa-trash-o'></i></a></td>
+    </tr>";
+}
+if(!$whitelist_rows) $whitelist_rows = "<tr><td colspan='4' class='text-center text-muted'>Whitelist boş. Güvendiğiniz IP, email veya domainleri buradan ekleyin.</td></tr>";
+
+echo "<div id='whitelist_tab' class='panel panel-flat tab-content-panel' style='{$style_whitelist}'>
+<div class='panel-heading'><h5 class='panel-title'>Güvenli Liste (Whitelist)</h5><div class='heading-elements'><ul class='icons-list'><li><a href='#' onclick=\"$('#newwhitelist').modal(); return false;\"><i class='fa fa-plus-circle'></i> Ekle</a></li></ul></div></div>
+<div class='table-responsive'><table class='table table-striped table-xs table-hover'>
+<thead><tr><th style='width:80px'>Tür</th><th>Değer</th><th>Not</th><th style='width:50px'>&nbsp;</th></tr></thead>
+<tbody>{$whitelist_rows}</tbody>
+</table></div></div>";
+
+echo '<div class="modal fade" id="newwhitelist"><div class="modal-dialog"><div class="modal-content">
+<form method="post" action="">
+<input type="hidden" name="mod" value="spamguard">
+<input type="hidden" name="add_whitelist" value="1">
+<input type="hidden" name="user_hash" value="'.$dle_login_hash.'">
+<div class="modal-header bg-teal"><button type="button" class="close" data-dismiss="modal">&times;</button><h6 class="modal-title">Whitelist\'e Ekle</h6></div>
+<div class="modal-body">
+    <div class="form-group">
+        <label>Tür</label>
+        <select name="wl_type" class="form-control">
+            <option value="ip">IP Adresi</option>
+            <option value="email">E-Posta</option>
+            <option value="domain">Domain</option>
+        </select>
+    </div>
+    <div class="form-group">
+        <label>Değer</label>
+        <input type="text" name="wl_data" class="form-control" placeholder="örn: 192.168.1.1 veya user@domain.com" required>
+    </div>
+    <div class="form-group">
+        <label>Not (İsteğe Bağlı)</label>
+        <input type="text" name="wl_note" class="form-control" placeholder="Bu girişi neden eklediniz?">
+    </div>
+</div>
+<div class="modal-footer"><button type="submit" class="btn btn-sm bg-teal btn-raised">Ekle</button></div>
+</form></div></div></div>';
+
+// 6. LOGS TAB
 $style_logs = ($active_tab == 'logs_tab') ? '' : 'display:none;';
-echo "<div id='logs_tab' class='panel panel-flat tab-content-panel' style='{$style_logs}'><div class='panel-body'><h6 class='no-margin'>Loglar</h6></div><table class='table'><thead><tr><th>Tarih</th><th>IP</th><th>Sebep</th></tr></thead><tbody>";
+echo "<div id='logs_tab' class='panel panel-flat tab-content-panel' style='{$style_logs}'><div class='panel-body'><h6 class='no-margin'>Loglar</h6></div><table class='table table-striped table-xs'><thead><tr><th>Tarih</th><th>IP</th><th>Sebep</th><th>Detay (Data)</th></tr></thead><tbody>";
 $db->query("SELECT * FROM " . PREFIX . "_spam_logs ORDER BY id DESC LIMIT 50");
-while($log = $db->get_row()) { echo "<tr><td>".date("d.m.Y H:i",$log['date'])."</td><td>{$log['ip']}</td><td>{$log['reason']}</td></tr>"; }
+while($log = $db->get_row()) {
+    $safe_ip     = htmlspecialchars($log['ip'],     ENT_QUOTES, 'UTF-8');
+    $safe_reason = htmlspecialchars($log['reason'], ENT_QUOTES, 'UTF-8');
+    $safe_data   = htmlspecialchars($log['data'],   ENT_QUOTES, 'UTF-8');
+    echo "<tr><td>".date("d.m.Y H:i",$log['date'])."</td><td>{$safe_ip}</td><td><span class='label label-danger'>{$safe_reason}</span></td><td><span class='text-muted text-size-small'>{$safe_data}</span></td></tr>";
+}
 echo "</tbody></table></div>";
 
 echo "</div>"; // End sg_container
 echofooter();
 ?>]]></replacecode>
+			<enabled>1</enabled>
 		</operation>
 	</file>
-    
-    <file name="engine/modules/spamguard_check.php">
+	<file name="engine/modules/spamguard_check.php">
 		<operation action="create">
 			<replacecode><![CDATA[<?php
 if (!defined('DATALIFEENGINE')) die("Hacking attempt!");
@@ -544,24 +637,103 @@ if (!defined('DATALIFEENGINE')) die("Hacking attempt!");
 include_once (DLEPlugins::Check(ENGINE_DIR . '/data/spamguard_config.php'));
 
 if(!$sg_config['status']) return;
-$user_ip = $_IP;
 
-if(isset($_POST['register'])) {
+global $db, $_TIME;
+$user_ip = get_ip(); 
+
+// 1. Güvenli Log Tutma Fonksiyonu (SQL Injection Korumalı)
+if(!function_exists('sg_log_spam')) {
+    function sg_log_spam($reason, $data = '') {
+        global $db, $user_ip, $_TIME;
+        if(!$_TIME) $_TIME = time(); 
+        
+        $reason_safe = $db->safesql($reason);
+        $data_safe = $db->safesql($data);
+        
+        $db->query("INSERT INTO " . PREFIX . "_spam_logs (ip, date, username, reason, data) VALUES ('$user_ip', '$_TIME', 'Guest', '$reason_safe', '$data_safe')");
+    }
+}
+
+// =========================================================================
+// Panelden Gelen Ayarları Motora Bağlama (Proxy ve Süre)
+// =========================================================================
+
+// Whitelist Kontrolü - IP veya email listede varsa tüm kontroller atlanır
+$sg_whitelisted = false;
+if(isset($_POST['register']) || isset($_POST['submit_reg'])) {
+    $check_ip = $db->safesql($user_ip);
+    $wl_ip = $db->super_query("SELECT id FROM " . PREFIX . "_spam_whitelist WHERE type='ip' AND data='$check_ip'");
+    if($wl_ip['id']) {
+        $sg_whitelisted = true;
+    } elseif(!empty($_POST['email'])) {
+        $check_email = $db->safesql(strtolower(trim($_POST['email'])));
+        $check_domain = $db->safesql(substr(strrchr($check_email, "@"), 1));
+        $wl_email = $db->super_query("SELECT id FROM " . PREFIX . "_spam_whitelist WHERE (type='email' AND data='$check_email') OR (type='domain' AND data='$check_domain')");
+        if($wl_email['id']) $sg_whitelisted = true;
+    }
+}
+
+// 2. Form Gönderildiğinde Güvenlik Duvarları Devreye Girer
+if(!$sg_whitelisted && (isset($_POST['register']) || isset($_POST['submit_reg']))) {
+
+    // Proxy / VPN Engelleme (Admin Panelinden Aktif Edildiyse)
+    // NOT: HTTP_X_FORWARDED_FOR ve HTTP_CLIENT_IP listeden çıkarıldı.
+    // Bu headerlar Cloudflare, load balancer gibi meşru sistemlerde de gelir,
+    // açık bırakılırsa tüm ziyaretçiler bloklanır.
+    if(intval($sg_config['block_proxy']) == 1) {
+        $proxy_headers = array('HTTP_VIA', 'HTTP_X_CAME_FROM', 'HTTP_PROXY_CONNECTION', 'HTTP_FORWARDED');
+        foreach($proxy_headers as $header) {
+            if(!empty($_SERVER[$header])) {
+                sg_log_spam("Proxy/VPN Engeli", "Tespit Edilen Header: {$header}");
+                msg("error", "Güvenlik Engeli", "VPN veya Proxy bağlantısı ile kayıt yapılamaz.");
+            }
+        }
+    }
+
+    // Zaman Kontrolü (Admin Panelinden Gelen Min. Süreye Göre)
+    // Hidden field yöntemi: Session'dan daha güvenilir.
+    // Bot direkt POST atsa bile form_time ya boş gelir ya da 0 olur, yakalanır.
+    $min_time = intval($sg_config['min_reg_time']);
+    if($min_time > 0) {
+        $form_time = intval($_POST['mws_form_time'] ?? 0);
+        if(!$form_time || (time() - $form_time) < $min_time) {
+            $elapsed = $form_time ? (time() - $form_time) : 0;
+            sg_log_spam("Hiz Limiti Asildi", "Gecen sure: {$elapsed} sn, Min: {$min_time} sn");
+            msg("error", "Güvenlik Engeli", "Formu doldurmak için çok az zaman harcandı. Lütfen tekrar deneyin.");
+        }
+    }
     
-    // StopForumSpam Check
+    // HoneyPot Kontrolü (Görünmez Tuzak)
+    if(!empty($_POST['mws_token'])) {
+        sg_log_spam("Honeypot Yakalamasi", "Gizli form alani dolduruldu.");
+        msg("error", "Güvenlik Engeli", "Spam korumasına takıldınız. Bot olmadığınızı doğrulayamadık.");
+    }
+
+    // Manuel Domain Blokajı
+    if(!empty($_POST['email'])) {
+        $bad_patterns = ['seoautomation', 'verifiedlinklist', 'goodmail', 'thailandtravel', 'automationpro'];
+        $user_email = strtolower(trim($_POST['email']));
+        foreach($bad_patterns as $pattern) {
+            if(strpos($user_email, $pattern) !== false) {
+                sg_log_spam("Kara Liste Domain", "Kullanilan Email: {$user_email}");
+                msg("error", "Spam Engeli", "Bu e-posta servisi ile kayıt yasaktır kanka. Hadi başka kapıya!");
+            }
+        }
+    }
+
+    // Orijinal StopForumSpam Kontrolü (HTTPS)
     if($sg_config['sfs_api']) {
         $email = urlencode($_POST['email']);
         $ip = urlencode($user_ip);
         $username = urlencode($_POST['name']);
         
-        $api_url = "http://api.stopforumspam.org/api?ip=$ip&email=$email&username=$username&f=json";
+        $api_url = "https://api.stopforumspam.org/api?ip=$ip&email=$email&username=$username&f=json";
         
-        // Use curl for better reliability
         if(function_exists('curl_init')) {
             $ch = curl_init();
             curl_setopt($ch, CURLOPT_URL, $api_url);
             curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
-            curl_setopt($ch, CURLOPT_TIMEOUT, 5);
+            curl_setopt($ch, CURLOPT_TIMEOUT, 3);
             $response = curl_exec($ch);
             curl_close($ch);
         } else {
@@ -571,34 +743,39 @@ if(isset($_POST['register'])) {
         if($response) {
             $data = json_decode($response, true);
             if(isset($data['success']) && $data['success'] == 1) {
-                if($data['ip']['appears'] || $data['email']['appears'] || $data['username']['appears']) {
-                     if(!function_exists('sg_log_spam')) {
-                        function sg_log_spam($reason, $data = '') {
-                            global $db, $user_ip, $_TIME;
-                            if(!$_TIME) $_TIME = time(); // fallback
-                            $db->query("INSERT INTO " . PREFIX . "_spam_logs (ip, date, username, reason, data) VALUES ('$user_ip', '$_TIME', 'Guest', '$reason', '$data')");
-                        }
-                     }
-                     sg_log_spam("StopForumSpam Match", "IP: {$data['ip']['frequency']}, Email: {$data['email']['frequency']}, User: {$data['username']['frequency']}");
+                $ip_appears = isset($data['ip']['appears']) ? $data['ip']['appears'] : false;
+                $email_appears = isset($data['email']['appears']) ? $data['email']['appears'] : false;
+                $user_appears = isset($data['username']['appears']) ? $data['username']['appears'] : false;
+
+                if($ip_appears || $email_appears || $user_appears) {
+                     $ip_freq = isset($data['ip']['frequency']) ? $data['ip']['frequency'] : 0;
+                     $email_freq = isset($data['email']['frequency']) ? $data['email']['frequency'] : 0;
+                     $user_freq = isset($data['username']['frequency']) ? $data['username']['frequency'] : 0;
+                     
+                     sg_log_spam("StopForumSpam Match", "IP: {$ip_freq}, Email: {$email_freq}, User: {$user_freq}");
                      msg("error", "Hata", "Spam veritabanında kaydınız bulundu. Kayıt olamazsınız.");
                 }
             }
         }
     }
 
-    if($sg_config['ban_disposable']) {
+    // Geçici Mail Kontrolü
+    if(intval($sg_config['ban_disposable']) == 1) {
         $email = strtolower(trim($_POST['email']));
         $domain = substr(strrchr($email, "@"), 1);
         $banned_domains = explode(",", $sg_config['banned_domains']);
         if(in_array($domain, $banned_domains)) {
+             sg_log_spam("Gecici Mail Denemesi", "Engellenen Domain: {$domain}");
              msg("error", "Hata", "Kullandığınız e-posta servisinin bu siteye kayıt olması engellenmiştir.");
         }
     }
 }
-?>]]></replacecode>
+?>
+]]></replacecode>
+			<enabled>1</enabled>
 		</operation>
 	</file>
-    <file name="engine/modules/register.php">
+	<file name="engine/modules/register.php">
 		<operation action="replace">
 			<searchcode><![CDATA[if( !defined('DATALIFEENGINE') ) {
 	header( "HTTP/1.1 403 Forbidden" );
@@ -611,7 +788,7 @@ if(isset($_POST['register'])) {
 	die( "Hacking attempt!" );
 }
 include_once (DLEPlugins::Check(ENGINE_DIR . '/modules/spamguard_check.php'));]]></replacecode>
+			<enabled>1</enabled>
 		</operation>
 	</file>
-
 </dleplugin>
